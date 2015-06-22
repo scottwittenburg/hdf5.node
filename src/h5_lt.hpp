@@ -1009,16 +1009,35 @@ static void read_dataset (const v8::FunctionCallbackInfo<Value>& args)
         { 
             case H5T_STRING:
             {
-                std::string buffer(theSize+1, 0);
-                err=H5LTread_dataset_string (args[0]->ToInt32()->Value(), *dset_name,  (char*)buffer.c_str());
-                if(err<0)
-                {
-                    v8::Isolate::GetCurrent()->ThrowException(v8::Exception::SyntaxError(String::NewFromUtf8(v8::Isolate::GetCurrent(), "failed to read dataset into string")));
-                    args.GetReturnValue().SetUndefined();
-                    return;
-                }
-//                std::cout<<"c side\n"<<buffer<<std::endl;
-                args.GetReturnValue().Set(String::NewFromUtf8(v8::Isolate::GetCurrent(), buffer.c_str(), String::kNormalString, theSize));
+                hid_t datasetIdx = H5Dopen(args[0]->ToInt32()->Value(), *dset_name, H5P_DEFAULT);
+                hid_t  spaceIdx  = H5Dget_space(datasetIdx);
+
+                char** rawStrings = new char*[theSize];
+
+                hid_t memtype = H5Tcopy(H5T_C_S1);
+                herr_t status = H5Tset_size(memtype, H5T_VARIABLE);
+
+                // HDF5 library will allocate memory for each string it reads
+                status = H5Dread(datasetIdx, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, rawStrings);
+
+                // Create a new empty array.
+                Local<Array> array = Array::New(v8::Isolate::GetCurrent(), theSize);
+
+                // Return an empty result if there was an error creating the array.
+                if (array.IsEmpty())
+                    args.GetReturnValue().Set(Local<Array>());
+
+                for (int i = 0; i < theSize; ++i)
+                    array->Set(i, String::NewFromUtf8(v8::Isolate::GetCurrent(), static_cast<const char*>(rawStrings[i])));
+
+                args.GetReturnValue().Set(array);
+
+                // Here we ask the HDF5 library to free the memory it allocated for each string
+                status = H5Dvlen_reclaim (memtype, spaceIdx, H5P_DEFAULT, rawStrings);
+                delete [] rawStrings;
+                H5Tclose(memtype);
+                H5Sclose(spaceIdx);
+                H5Dclose(datasetIdx);
             }
                 break;
             default:
