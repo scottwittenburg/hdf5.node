@@ -399,14 +399,14 @@ static void make_dataset (const v8::FunctionCallbackInfo<Value>& args)
         type_id=H5T_NATIVE_UINT8;
         buffer = Local<Uint8Array>::Cast(args[2]);
     }
-    else if(args[2]->IsArray())
-    {
-        // Ruled out string and every other numeric array type, maybe it
-        // is an array of strings?
-        std::cout << "This could be an attempt to create a string array dataset" << std::endl;
-        args.GetReturnValue().SetUndefined();
-        return;
-    }
+//    else if(args[2]->IsArray())
+//    {
+//        // Ruled out string and every other numeric array type, maybe it
+//        // is an array of strings?
+//        std::cout << "This could be an attempt to create a string array dataset" << std::endl;
+//        args.GetReturnValue().SetUndefined();
+//        return;
+//    }
     else
     {
         v8::Isolate::GetCurrent()->ThrowException(v8::Exception::SyntaxError(String::NewFromUtf8(v8::Isolate::GetCurrent(), "unsupported data type")));
@@ -1017,76 +1017,94 @@ static void read_dataset (const v8::FunctionCallbackInfo<Value>& args)
         { 
             case H5T_STRING:
             {
-                hid_t datasetIdx = H5Dopen(args[0]->ToInt32()->Value(), *dset_name, H5P_DEFAULT);
-                hid_t  spaceIdx  = H5Dget_space(datasetIdx);
-
-                hid_t          typeIdx  = H5Dget_type(datasetIdx);
-                H5T_class_t  dataTypeId = H5Tget_class(typeIdx);
-
+                hid_t datasetIdx  = H5Dopen(args[0]->ToInt32()->Value(), *dset_name, H5P_DEFAULT);
+                hid_t  spaceIdx   = H5Dget_space(datasetIdx);
+                hid_t   typeIdx   = H5Dget_type(datasetIdx);
                 htri_t isVariable = H5Tis_variable_str(typeIdx);
-
                 int ndims = H5Sget_simple_extent_ndims(spaceIdx);
-                hsize_t dimSizes[ndims], maxDimSizes[ndims];
-                H5Sget_simple_extent_dims(spaceIdx, &dimSizes[0], &maxDimSizes[0]);
 
-                // Allocate space for the pointers to the elements in the strings
-                char** rawStrings = new char*[theSize];
-                size_t stringSize;
-                hid_t memtype = H5Tcopy(H5T_C_S1);
-                herr_t status;
-                void* buffer;
-
-                if (isVariable)
+                if (ndims == 0)
                 {
-                    std::cout << *dset_name << " is an array of variable length strings" << std::endl;
-                    status = H5Tset_size(memtype, H5T_VARIABLE);
-                    buffer = rawStrings;
+                    // This dataset has a SCALAR dataspace (just a single string)
+
+                    std::string buffer(theSize+1, 0);
+                    err=H5LTread_dataset_string (args[0]->ToInt32()->Value(), *dset_name,  (char*)buffer.c_str());
+                    if(err<0)
+                        {
+                        v8::Isolate::GetCurrent()->ThrowException(v8::Exception::SyntaxError(String::NewFromUtf8(v8::Isolate::GetCurrent(), "failed to read dataset into string")));
+                        args.GetReturnValue().SetUndefined();
+                        return;
+                        }
+                    //std::cout<<"c side\n"<<buffer<<std::endl;
+                    args.GetReturnValue().Set(String::NewFromUtf8(v8::Isolate::GetCurrent(), buffer.c_str(), String::kNormalString, theSize));
                 }
                 else
                 {
-                    std::cout << *dset_name << " is an array of fixed length strings" << std::endl;
-                    stringSize = H5Tget_size(typeIdx);
-                    std::cout << "    size of fixed length strings: " << stringSize << std::endl;
+                    // This dataset has a SIMPLE dataspace (a multi-dimensional array of strings)
 
-                    // Allocate space for fixed-length strings.
-                    rawStrings[0] = new char[dimSizes[0] * (stringSize + 1) * sizeof(char)];
+                    hsize_t dimSizes[ndims], maxDimSizes[ndims];
+                    H5Sget_simple_extent_dims(spaceIdx, &dimSizes[0], &maxDimSizes[0]);
 
-                    // Set the rest of the pointers to rows to the correct addresses.
-                    for (int strIdx = 1; strIdx < dimSizes[0]; strIdx++)
+                    // Allocate space for the pointers to the elements in the strings
+                    char** rawStrings = new char*[theSize];
+                    size_t stringSize;
+                    hid_t memtype = H5Tcopy(H5T_C_S1);
+                    herr_t status;
+                    void* buffer;
+
+                    if (isVariable)
                     {
-                        rawStrings[strIdx] = rawStrings[0] + (strIdx * (stringSize + 1));
+                        //std::cout << *dset_name << " is an array of variable length strings" << std::endl;
+                        status = H5Tset_size(memtype, H5T_VARIABLE);
+                        buffer = rawStrings;
+                    }
+                    else
+                    {
+                        //std::cout << *dset_name << " is an array of fixed length strings" << std::endl;
+                        stringSize = H5Tget_size(typeIdx);
+                        //std::cout << "    size of fixed length strings: " << stringSize << std::endl;
+
+                        // Allocate space for fixed-length strings.
+                        int allocateSize = dimSizes[0] * (stringSize + 1) * sizeof(char);
+                        rawStrings[0] = new char[allocateSize];
+
+                        // Set the rest of the pointers to rows to the correct addresses.
+                        for (int strIdx = 1; strIdx < dimSizes[0]; strIdx++)
+                        {
+                            rawStrings[strIdx] = rawStrings[0] + (strIdx * (stringSize + 1));
+                        }
+
+                        status = H5Tset_size(memtype, stringSize + 1);
+                        buffer = rawStrings[0];
                     }
 
-                    status = H5Tset_size(memtype, stringSize + 1);
-                    buffer = rawStrings[0];
+                    // In the case of variable length strings, HDF5 library will allocate memory
+                    // for each string it reads
+                    status = H5Dread(datasetIdx, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buffer);
+
+                    // Create a new empty array.
+                    Local<Array> array = Array::New(v8::Isolate::GetCurrent(), theSize);
+
+                    // Return an empty result if there was an error creating the array.
+                    if (array.IsEmpty())
+                        args.GetReturnValue().Set(Local<Array>());
+
+                    for (int i = 0; i < theSize; ++i)
+                        array->Set(i, String::NewFromUtf8(v8::Isolate::GetCurrent(), static_cast<const char*>(rawStrings[i])));
+
+                    args.GetReturnValue().Set(array);
+
+                    // Here we ask the HDF5 library to free the memory it allocated for each string
+                    status = H5Dvlen_reclaim (memtype, spaceIdx, H5P_DEFAULT, rawStrings);
+                    if (!isVariable)
+                    {
+                        delete [] rawStrings[0];
+                    }
+                    delete [] rawStrings;
+
+                    H5Tclose(memtype);
                 }
 
-                // In the case of variable length strings, HDF5 library will allocate memory
-                // for each string it reads
-                status = H5Dread(datasetIdx, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buffer);
-
-                std::cout << "Finished with the read call" << std::endl;
-
-                // Create a new empty array.
-                Local<Array> array = Array::New(v8::Isolate::GetCurrent(), theSize);
-
-                // Return an empty result if there was an error creating the array.
-                if (array.IsEmpty())
-                    args.GetReturnValue().Set(Local<Array>());
-
-                for (int i = 0; i < theSize; ++i)
-                    array->Set(i, String::NewFromUtf8(v8::Isolate::GetCurrent(), static_cast<const char*>(rawStrings[i])));
-
-                args.GetReturnValue().Set(array);
-
-                // Here we ask the HDF5 library to free the memory it allocated for each string
-                status = H5Dvlen_reclaim (memtype, spaceIdx, H5P_DEFAULT, rawStrings);
-                if (!isVariable)
-                {
-                    delete [] rawStrings[0];
-                }
-                delete [] rawStrings;
-                H5Tclose(memtype);
                 H5Sclose(spaceIdx);
                 H5Dclose(datasetIdx);
             }
