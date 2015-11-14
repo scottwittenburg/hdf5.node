@@ -9,6 +9,8 @@
 #include <vector>
 #include <memory>
 
+#include <iostream>
+
 
 namespace NodeHDF5{
     class Attributes : public node::ObjectWrap {
@@ -61,9 +63,56 @@ namespace NodeHDF5{
                     break;
                 case H5T_STRING:
                 {
-                    std::string strValue(H5Aget_storage_size(attr_id),'\0');
-                    H5Aread(attr_id, attr_type, (void*)strValue.c_str());
-                    args.This()->Set(v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), holder[index].c_str()), v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), strValue.c_str()));
+                    htri_t isVlen = H5Tis_variable_str( attr_type );
+
+                    if (isVlen == -1) {
+                        std::cout << "The H5Tis_variable_str function did not return successfully" << std::endl;
+                    } else if (isVlen == 0) {
+                        /*
+                         * Do whatever was done before I came along.
+                         */
+                        hsize_t storeSize = H5Aget_storage_size(attr_id);
+                        std::string strValue(storeSize,'\0');
+                        H5Aread(attr_id, attr_type, (void*)strValue.c_str());
+                        args.This()->Set(v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), holder[index].c_str()), v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), strValue.c_str()));
+                    } else {
+                        std::cout << "Variable-length string attribute encountered" << std::endl;
+
+                        hsize_t dims[1];
+                        hid_t space = H5Aget_space (attr_id);
+
+                        int ndims = H5Sget_simple_extent_dims (space, dims, NULL);
+                        char** rdata = (char **) malloc (dims[0] * sizeof (char *));
+
+                        /*
+                         * Create the memory datatype.
+                         */
+                        hid_t memtype = H5Tcopy (H5T_C_S1);
+                        herr_t status = H5Tset_size (memtype, H5T_VARIABLE);
+
+                        /*
+                         * Read the data.
+                         */
+                        status = H5Aread (attr_id, memtype, rdata);
+
+                        /*
+                         * Print the data
+                         */
+                        for (int i=0; i<dims[0]; i++)
+                        {
+                            std::cout << "    " << i << ": " << rdata[i] << std::endl;
+                        }
+
+                        /*
+                         * Clean up the mess I made
+                         */
+                        status = H5Dvlen_reclaim (memtype, space, H5P_DEFAULT, rdata);
+                        free (rdata);
+                        status = H5Sclose (space);
+                        status = H5Tclose (memtype);
+                    }
+
+
                 }
                     break;
                 case H5T_NO_CLASS:
@@ -80,9 +129,9 @@ namespace NodeHDF5{
             return;
 
         };
-    
+
         static void Flush (const v8::FunctionCallbackInfo<v8::Value>& args) {
-        
+
         // fail out if arguments are not correct
             if (args.Length() >0 ) {
 
@@ -112,7 +161,7 @@ namespace NodeHDF5{
                             H5Adelete(group->id, *v8::String::Utf8Value(name->ToString()));
                         }
                         hid_t attr_type=H5Tcopy(H5T_NATIVE_UINT);
-                        hid_t attr_space=H5Screate( H5S_SCALAR ); 
+                        hid_t attr_space=H5Screate( H5S_SCALAR );
                         hid_t attr_id=H5Acreate2(group->id, *v8::String::Utf8Value(name->ToString()), attr_type, attr_space, H5P_DEFAULT, H5P_DEFAULT);
                         if(attr_id<0)
                         {
@@ -137,7 +186,7 @@ namespace NodeHDF5{
                             H5Adelete(group->id, *v8::String::Utf8Value(name->ToString()));
                         }
                         hid_t attr_type=H5Tcopy(H5T_NATIVE_INT);
-                        hid_t attr_space=H5Screate( H5S_SCALAR ); 
+                        hid_t attr_space=H5Screate( H5S_SCALAR );
                         hid_t attr_id=H5Acreate2(group->id, *v8::String::Utf8Value(name->ToString()), attr_type, attr_space, H5P_DEFAULT, H5P_DEFAULT);
                         if(attr_id<0)
                         {
@@ -163,7 +212,7 @@ namespace NodeHDF5{
                             H5Adelete(group->id, *v8::String::Utf8Value(name->ToString()));
                         }
                         hid_t attr_type=H5Tcopy(H5T_NATIVE_DOUBLE);
-                        hid_t attr_space=H5Screate( H5S_SCALAR ); 
+                        hid_t attr_space=H5Screate( H5S_SCALAR );
                         hid_t attr_id=H5Acreate2(group->id, *v8::String::Utf8Value(name->ToString()), attr_type, attr_space, H5P_DEFAULT, H5P_DEFAULT);
                         if(attr_id<0)
                         {
@@ -189,7 +238,7 @@ namespace NodeHDF5{
                         }
                         hid_t attr_type=H5Tcopy(H5T_C_S1);
                         H5Tset_size(attr_type, std::strlen(value.c_str()));
-                        hid_t attr_space=H5Screate( H5S_SCALAR ); 
+                        hid_t attr_space=H5Screate( H5S_SCALAR );
                         hid_t attr_id=H5Acreate2(group->id, *v8::String::Utf8Value(name->ToString()), attr_type, attr_space, H5P_DEFAULT, H5P_DEFAULT);
                         if(attr_id<0)
                         {
@@ -213,7 +262,7 @@ namespace NodeHDF5{
             return;
 
         };
-        
+
     protected:
         virtual int getNumAttrs() = 0;
     };
